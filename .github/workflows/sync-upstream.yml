@@ -1,0 +1,35 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync-master
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Add and fetch upstream
+        run: |
+          git remote add upstream https://github.com/gamboozino/ngbrecomp.git
+          git fetch origin master
+          git fetch upstream master
+
+      - name: Fast-forward fork master only
+        run: |
+          git checkout master
+          git merge --ff-only upstream/master
+          git push origin master
