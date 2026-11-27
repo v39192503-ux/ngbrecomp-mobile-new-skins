@@ -1,17 +1,19 @@
-# VER40 Controls Pack — 1.0.3 source update
+# Ninja Gaiden Black Android v1.0.3 — VER40 Controls Pack
 
-## Updated
-- Replaced the branch's prior assets-only integration snapshot with the full sanitized source tree from the isolated Android 1.0.3 work copy.
-- Integrated the visible editor HUD, settings drawer, selected-control outline and resize handle, grid overlay, and profile/layout preview rendering.
-- Custom overrides now participate in touch-control drawing, including visibility and layout/profile placement; rendering cache invalidates on changes.
-- Three fallback skin modes are wired in the stand-in renderer, including original classic assets.
-- Added documentation for the editor and its controls.
+## Updated source and features
+- Replaced the branch's previous assets-only staging folder with the full sanitized source for the VER40 Controls Pack.
+- Android touch control skins: VER40, Classic/Kenney preserved originals and Game-style fallback.
+- Visible editor HUD and drawer: move/resize controls, adjust size and opacity, hide/show, reset confirmation, Save/Cancel, grid/snap/spacing, skin and layout.
+- Custom positions, sizes and visibility now render through the Android touch overlay; selected-control outline and resize handle are included.
+- Profiles GAME/MENU are manually switched in the editor (automatic menu detection not yet wired).
 
-## Validation
-- Native Android ARM64 C/C++ target built successfully after editor rendering integration.
-- APK packaging completed successfully; signature v3 and 16-KB zip alignment were verified for the candidate.
-- Runtime install/interaction tests remain pending (no ADB device attached).
-- Automatic game-menu profile switching remains pending; profile selection is manual.
+## Build / validation
+- Android ARM64 native target compiled and APK packaged.
+- Package: `io.github.gamboozino.ngbrecomp` (versionCode 1004; versionName `1.0.3 Controls Pack`)
+- APK signature v3 verification passed.
+- 16 KB ZIP alignment verification passed.
+- Manifest, target SDK 35, min SDK 29, arm64 ABI confirmed.
+- SHA-256: `65205bedfe35530bacd5b879feea4b9484bb2eac43bdda9746dfa0eed688af8c`
+- Runtime install/visual/input test remains pending; no Android device was connected via ADB.
 
-## Distribution hygiene
-The published branch intentionally omits XISO/XBE/game files, generated recompilation source, build output, local Python environments, and personal continuation notes.
+Game files and generated recompilation source are not included. Use your own legally obtained retail game data.
