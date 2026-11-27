@@ -153,8 +153,8 @@ mkdir -p "$apk/classes" "$apk/dex" "$apk/root/lib/$abi"
 javac -source 8 -target 8 -nowarn -Xlint:none -cp "$platform/android.jar" -d "$apk/classes" \
     "$deps"/src/SDL/android-project/app/src/main/java/org/libsdl/app/*.java \
     "$here"/java/io/github/gamboozino/ngbrecomp/*.java 2>"$apk/javac.log"
-mapfile -d '' classes < <(find "$apk/classes" -name '*.class' -print0)
-"$tools/d8" --release --min-api "$api" --lib "$platform/android.jar" --output "$apk/dex" "${classes[@]}"
+mapfile -d '' class_files < <(find "$apk/classes" -name '*.class' -print0)
+"$tools/d8" --release --min-api $api --lib "$platform/android.jar" --output "$apk/dex" "${class_files[@]}"
 "$tools/aapt2" compile --dir "$here/res" -o "$apk/res.zip"   # (the icon: the AppImage's)
 # the licences, in the APK's assets/licenses (as the other packages carry them)
 lic=$apk/assets/licenses
@@ -199,3 +199,6 @@ key=$deps/debug.keystore
 "$tools/apksigner" sign --ks "$key" --ks-pass pass:android --ks-key-alias ngb \
     --out "$out/NinjaGaidenBlack-android-arm64.apk" "$apk/aligned.apk"
 ls -l "$out/NinjaGaidenBlack-android-arm64.apk"
+
+
+
