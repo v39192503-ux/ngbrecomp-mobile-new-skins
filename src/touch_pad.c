@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Touch controls (Android): an original Xbox pad laid over the screen -- the two sticks, the d-pad, A B X Y in
  * their colours, Black and White, the triggers, Back and Start and the stick clicks -- read from the screen's touches and
  * merged into the pad state the keyboard gives (src/keyboard.c, xbox_keyboard_map), which the game reads while
@@ -6,15 +6,12 @@
  *
  * The picture is made here, at the window's own size (half its size, enlarged by the presenter, blurred every
  * piece: #284; NGB_TOUCH_HALF=1 makes it at half again, to compare), premultiplied BGRA, again whenever something
- * on it changes; the presenter blends it over each frame (xboxrecomp's present_sdl.c, nv2a_overlay_picture). The pieces
- * are made from the game's own button art (src/game_prompts.c: the game's gems, plates and Black and White
- * buttons at touch size, a d-pad drawn in the look of its icon, the sticks' wells; each held piece a picture of
- * its own), and saved in the save folder (<save folder>/touch-art), so a later start shows them from its first
- * frame. On a first start nothing is drawn until they are made (a second or so after the game's textures load).
- * Should they not come -- the game's textures not read after STANDIN_AFTER_MS of frames, or the arcade, which has no game_prompts.c --
- * stand-ins so a phone without a controller still has its controls: Kenney's Mobile Controls (CC0: assets/touch,
- * embedded by CMakeLists.txt) for the sticks and d-pad, the buttons dark discs with their letters in Noto Sans
- * (OFL: launcher_font.h), held: a gold ring round them. Half see-through untouched.
+ * on it changes; the presenter blends it over each frame (xboxrecomp's present_sdl.c, nv2a_overlay_picture). The
+ * selected skin controls the actual artwork regardless of whether the game's pieces have loaded: VER40 uses its
+ * embedded touch PNGs; Classic uses the embedded Kenney touch PNGs plus generated labeled button discs; Game-style
+ * uses the game's art when available and generated stand-ins otherwise. This keeps selected skins visible during
+ * gameplay instead of silently reverting to game-art after textures load. Untouched controls are translucent;
+ * pressed controls use their lit artwork.
  *
  * Places are in screen heights from the left or right edge or the middle (a tall screen keeps its controls in
  * the corners; a less wide one draws the d-pad and right stick in towards the middle). The face buttons sit in
@@ -34,9 +31,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #include <SDL.h>
 
+#include "port.h"
 #include "platform/xbox_winnt.h"
 #include "input/xinput_xbox.h"
 #include "game_prompts.h"
@@ -52,7 +52,7 @@ extern const int ngb_touch_png_count;   /* (CMakeLists.txt: the stand-in pieces 
 __attribute__((weak)) const NgbPic *ngb_gp_touch(const char *piece);
 
 enum Kind { BUTTON, STICK, DPAD };
-enum Id { LSTICK, RSTICK, DPAD_ID, BA, BB, BX, BY, LB, RB, LT, RT, BACK, START, LS, RS, SWAP, OPACITY, NCTRL };
+enum Id { LSTICK, RSTICK, DPAD_ID, BA, BB, BX, BY, LB, RB, LT, RT, BACK, START, LS, RS, SWAP, OPACITY, GEAR, NCTRL };
 
 typedef struct {
     enum Kind kind;
@@ -89,6 +89,8 @@ static const Ctrl s_ctrl[NCTRL] = {
     [SWAP]    = { BUTTON, 0, 0.05f,  0.36f,  0.035f, "layout", "<>", 0xE6E6E6, "swap" },   /* the layout switch */
     [OPACITY] = { BUTTON, 0, 0.05f,  0.46f,  0.035f, "opacity", "%", 0xE6E6E6, "opacity" },   /* how solid the
                                                        controls are drawn, a step each tap (#285), under the switch */
+    [GEAR]    = { BUTTON, 2, 0.0f,   0.09f,  0.055f, "gear", NULL, 0xE6E6E6, NULL },   /* Controls Pack: opens the
+                                                       layout editor (top middle; never a game button) */
 };
 
 /* Classic: the places of 0.9.x's controls, in the same pictures (#285: Block held by a left finger at the top
@@ -118,6 +120,7 @@ static const struct { int edge; float x, y, r; } s_classic[NCTRL] = {
     [SWAP]    = { 0, 0.05f, 0.41f, 0.035f },
     [OPACITY] = { 0, 0.05f, 0.52f, 0.035f },   /* (under the switch, clear of Block; a near miss of it not the
                                                  * switch, which lets go of all) */
+    [GEAR]    = { 2, 0.0f, 0.09f, 0.055f },
 };
 int ngb_pc_setting(int which);                    /* src/ingame_menu.c (48: the touch layout) */
 void ngb_pc_set_setting(int which, int value);
@@ -150,8 +153,28 @@ static int s_dpad;                            /* XBOX_GAMEPAD_DPAD_* bits */
 /* s_serial: +1 each change of what the picture shows (declared with the layout, above) */
 static int s_art_shown;                       /* the controls drawn (the last picture's; any thread reads it) */
 
+/* ---- the Controls Pack (src/touch_editor.inc.h): places, sizes, opacities and visibility the player set ---- */
+#define PROFILES 2   /* 0 gameplay, 1 menu: each with places of its own */
+#define LAYOUTS 2    /* 0 the default places, 1 Classic: what the layout switch changes between */
+typedef struct { bool custom, visible; float x, y, r, opacity; } Ov;   /* x, y, r as a Ctrl's, from its edge */
+static Ov s_ov[PROFILES][LAYOUTS][NCTRL];   /* (under s_lock) custom: the place is the player's, not the ones above */
+static Ov d_ov[PROFILES][LAYOUTS][NCTRL];   /* the picture's copy */
+static unsigned s_ov_rev = 1;               /* +1 each change to places, sizes, opacities, visibility or the skins */
+static int s_profile;                       /* the set shown now: 0 gameplay, 1 menu (the game's own signals) */
+static int s_skin;                          /* 0 VER40 pack, 1 original Kenney classic, 2 generated/game-style */
+static bool s_ini_save;                     /* touch-layout.ini to be written (on the game's side) */
+__attribute__((weak)) int ngb_touch_menu_auto(void);   /* src/pc_menu.c: boot, menus, cards and movies */
+
 #define MAX_FINGERS 10
-static struct { SDL_FingerID id; int ctrl; bool used; } s_finger[MAX_FINGERS];
+static struct {
+    SDL_FingerID id;
+    int ctrl;
+    bool used;
+    int ui_action;            /* the editor's: the panel button this finger holds (-1: a control) */
+    bool editing, resizing;
+    float x, y;
+    uint64_t pressed_ms;
+} s_finger[MAX_FINGERS];
 
 /* Where a control is on a screen this wide: its place (in screen heights) and radius. On a squarer screen than
  * about 16:10 (4:3, 3:2, 5:4: below NARROW) there is no room beside the player for the right stick and LT, which
@@ -165,8 +188,34 @@ typedef struct { float x, y, r; } Place;
 
 static int s_standin_places;   /* the stand-ins shown (under s_lock; d_standin the picture's copy) */
 
-static Place place_at(const Ctrl *c, float aspect, int standin, int layout)
+/* A control's x as measured from its edge, on the screen */
+static float edge_abs(int edge, float x, float aspect)
 {
+    return edge == 2 ? aspect / 2 + x : edge ? aspect - x : x;
+}
+
+static int ctl_edge(int id, int layout)
+{
+    return layout == 1 ? s_classic[id].edge : s_ctrl[id].edge;
+}
+
+/* Half the side of the box a control of radius r is drawn in (and a margin): to keep it on the screen */
+static float art_half(int id, float r)
+{
+    return (s_ctrl[id].kind == BUTTON ? 1.25f : s_ctrl[id].kind == DPAD ? 1.1f : 1.0f) * r + 0.02f;
+}
+
+/* ov: the player's places for this set and layout (NULL: none); a control they set is where they put it */
+static Place place_at(const Ctrl *c, float aspect, int standin, int layout, const Ov *ov)
+{
+    int id0 = (int)(c - s_ctrl);
+    if (ov && ov[id0].custom) {
+        Place q = { edge_abs(ctl_edge(id0, layout), ov[id0].x, aspect), ov[id0].y, ov[id0].r };
+        float half = art_half(id0, q.r), max = aspect - half;
+        q.x = max < half ? aspect * 0.5f : fminf(fmaxf(q.x, half), max);
+        q.y = fminf(fmaxf(q.y, half), 1.0f - half);
+        return q;
+    }
     if (standin && (c == &s_ctrl[LB] || c == &s_ctrl[RB]))
         c = &s_ctrl[c == &s_ctrl[LB] ? RB : LB];
     Place p = { c->x, c->y, c->r };
@@ -228,8 +277,11 @@ static Place place_at(const Ctrl *c, float aspect, int standin, int layout)
 
 static Place place(const Ctrl *c)
 {
-    return place_at(c, s_aspect, s_standin_places, s_layout == 1);
+    int l = s_layout == 1;
+    return place_at(c, s_aspect, s_standin_places, l, s_ov[s_profile][l]);
 }
+
+#include "touch_editor.inc.h"
 
 /* The control under (x, y) (screen heights), the sticks and pad found from a little way off */
 static int hit(float x, float y, bool buttons_only)
@@ -239,6 +291,8 @@ static int hit(float x, float y, bool buttons_only)
     for (int i = 0; i < NCTRL; i++) {
         const Ctrl *c = &s_ctrl[i];
         if (buttons_only && c->kind != BUTTON)
+            continue;
+        if (!s_ov[s_profile][s_layout == 1][i].visible)   /* (hidden in the editor: not there to touch) */
             continue;
         Place at = place(c);
         float dx = x - at.x, dy = y - at.y, d;
@@ -314,8 +368,7 @@ static int SDLCALL touch_watch(void *unused, SDL_Event *ev)
     (void)unused;
     if (ev->type != SDL_FINGERDOWN && ev->type != SDL_FINGERMOTION && ev->type != SDL_FINGERUP)
         return 0;
-    if (ev->type != SDL_FINGERUP && xbox_InputControllerPresent())
-        return 0;   /* (a finger lifting still lets go) */
+    bool controller = xbox_InputControllerPresent() != 0;
     if (ev->type == SDL_FINGERDOWN && !__atomic_load_n(&s_art_shown, __ATOMIC_ACQUIRE))
         return 0;   /* (no controls drawn yet: a tap on the intro presses nothing unseen) */
     pthread_mutex_lock(&s_lock);
@@ -328,6 +381,26 @@ static int SDLCALL touch_watch(void *unused, SDL_Event *ev)
             s_aspect = (float)ww / (float)wh;
     }
     float x = ev->tfinger.x * s_aspect, y = ev->tfinger.y;
+    uint64_t tick = touch_now_ms();
+    if (s_edit_mode) {   /* the editor takes every touch */
+        editor_touch_locked(ev, x, y, tick);
+        pthread_mutex_unlock(&s_lock);
+        return 0;
+    }
+    if (ev->type == SDL_FINGERDOWN && hit(x, y, false) == GEAR) {   /* the gear: the editor, not a game button */
+        editor_begin_locked(s_profile);
+        pthread_mutex_unlock(&s_lock);
+        return 0;
+    }
+    if (gesture_touch_locked(ev, x, y, tick)) {   /* two fingers held in the top middle: the editor, in a second */
+        pthread_mutex_unlock(&s_lock);
+        return 0;
+    }
+    if (ev->type != SDL_FINGERUP && controller) {   /* (a controller in use: only the gear and the gesture; a
+                                                     * finger lifting still lets go) */
+        pthread_mutex_unlock(&s_lock);
+        return 0;
+    }
     int f;
     for (f = 0; f < MAX_FINGERS && !(s_finger[f].used && s_finger[f].id == ev->tfinger.fingerId); f++)
         ;
@@ -398,10 +471,15 @@ static void let_go(void)
     if (__atomic_exchange_n(&had, now, __ATOMIC_ACQ_REL) == now || !now)   /* (two readers: play, the quick menu) */
         return;
     pthread_mutex_lock(&s_lock);
+    if (s_edit_mode)   /* (a controller connected while editing: what was set so far is dropped) */
+        editor_end_locked(false);
     memset(s_finger, 0, sizeof s_finger);
     memset(s_down, 0, sizeof s_down);
     memset(s_stick, 0, sizeof s_stick);
     s_dpad = 0;
+    memset(s_gesture, 0, sizeof s_gesture);
+    s_gesture_since = 0;
+    s_edit_gesture_fired = false;
     s_serial++;
     pthread_mutex_unlock(&s_lock);
 }
@@ -412,6 +490,7 @@ static void touch_init(void)
     if (__atomic_exchange_n(&done, 1, __ATOMIC_ACQ_REL))
         return;
     pthread_mutex_lock(&s_lock);
+    ini_load();
     layout_known();
     pthread_mutex_unlock(&s_lock);
     SDL_AddEventWatch(touch_watch, NULL);
@@ -429,8 +508,12 @@ void ngb_touch_map(XBOX_INPUT_STATE *st)
     pthread_mutex_lock(&save_lock);
     pthread_mutex_lock(&s_lock);
     int save = s_layout_save ? s_layout : -1, opacity = s_opacity_save ? s_opacity : -1;
+    bool ini = s_ini_save;
     s_layout_save = s_opacity_save = 0;
+    s_ini_save = false;
     pthread_mutex_unlock(&s_lock);
+    if (ini)
+        ini_save();
     if (save >= 0 && ngb_pc_set_setting)
         ngb_pc_set_setting(48, save);
     if (opacity >= 0 && ngb_pc_set_setting)
@@ -468,7 +551,11 @@ static uint32_t *s_px;   /* the picture being drawn (the presenter's buffer), an
 static int s_w, s_h;
 static bool d_down[NCTRL];
 static float d_stick[2][2], d_aspect;
-static int d_layout;
+static bool d_edit_mode, d_edit_settings, d_edit_collapsed, d_edit_grid, d_edit_snap;
+static int d_edit_profile, d_edit_layout, d_edit_selected, d_edit_grid_size, d_edit_skin;
+static bool d_edit_reset_confirm;
+static void editor_overlay_draw(void);
+static int d_layout, d_skin, d_profile;
 static float d_opacity = 1;       /* Touch Opacity: every piece's opacity times this */
 static int d_dpad;
 
@@ -776,7 +863,7 @@ static void draw_piece(const char *name, float cx, float cy, float bw, float bh,
 /* A button's picture, idle or held */
 static void draw_button(const Ctrl *c, bool lit, float cx, float cy, float r, float a)
 {
-    if (s_art == ART_GAME) {
+    if (d_skin == 2 && s_art == ART_GAME && c->piece) {
         char n[40];
         snprintf(n, sizeof n, lit ? "%s_lit" : "%s", c->piece);
         draw_piece(n, cx, cy, 2.5f * r, 2.5f * r, a);
@@ -797,6 +884,29 @@ static float s_bg_aspect;
 static enum Art s_bg_art;
 static int s_bg_layout = -1;
 static float s_bg_opacity = -1;
+static int s_bg_skin = -1, s_bg_profile = -1;
+static unsigned s_bg_ov_rev, d_ov_rev;
+
+static const char *pack_button_asset(int i)
+{
+    switch (i) {
+    case BA: return "action_run_or_evade";
+    case BB: return "action_shuriken";
+    case BX: return "action_sword";
+    case BY: return "action_ninja_silhouette";
+    case LB: return "shoulder_LB";
+    case RB: return "shoulder_RB";
+    case LT: return "shoulder_LT";
+    case RT: return "shoulder_RT";
+    case BACK: return "system_back";
+    case START: return "system_start";
+    case LS: return "shoulder_L";
+    case RS: return "shoulder_R";
+    case SWAP: return "touch_button_lit";
+    case OPACITY: return "touch_button_lit";
+    default: return NULL;
+    }
+}
 
 static void draw_idle(void)
 {
@@ -804,18 +914,45 @@ static void draw_idle(void)
     memset(s_px, 0, sizeof(uint32_t) * (size_t)s_w * s_h);
     for (int i = 0; i < NCTRL; i++) {
         const Ctrl *c = &s_ctrl[i];
-        Place at = place_at(c, d_aspect, s_art == ART_STANDIN, d_layout);
+        Place at = place_at(c, d_aspect, s_art == ART_STANDIN, d_layout, d_ov[d_profile][d_layout]);
+        if (!d_ov[d_profile][d_layout][i].visible) continue;
         float cx = at.x * u, cy = at.y * u, r = at.r * u;
-        if (c->kind == STICK)
-            draw_piece("pad", cx, cy, 2 * r, 2 * r, IDLE);
-        else if (c->kind == DPAD)
-            draw_piece("dpad", cx, cy, 2.2f * r, 2.2f * r, IDLE);
-        else   /* (the pieces fill about four fifths of their picture: drawn a little over the button's size) */
-            draw_button(c, false, cx, cy, r, IDLE + (i >= BA && i <= BY ? 0.2f : 0.1f));   /* (the face buttons
-                                                       a little less see-through: X and A were faint) */
+        if (d_skin == 0) {
+            if (c->kind == STICK) {
+                draw_piece("analog_base", cx, cy, 2 * r, 2 * r, IDLE * d_opacity);
+                draw_piece("analog_center", cx, cy, r, r, IDLE * d_opacity);
+            } else if (c->kind == DPAD) {
+                draw_piece("dpad_4way", cx, cy, 2.2f * r, 2.2f * r, IDLE * d_opacity);
+            } else if (i == GEAR) {
+                draw_piece("gear_192", cx, cy, 1.65f * r, 1.65f * r, 0.78f * d_opacity);
+            } else {
+                const char *asset = pack_button_asset(i);
+                if (asset) draw_piece(asset, cx, cy, 2 * r, 2 * r, IDLE * d_opacity);
+                else draw_button(c, false, cx, cy, r, IDLE * d_opacity);
+            }
+        } else if (d_skin == 1) {
+            if (c->kind == STICK) {
+                draw("touch_pad", cx, cy, 2 * r, 2 * r, IDLE * d_opacity);
+                draw("touch_nub", cx, cy, r, r, IDLE * d_opacity);
+            } else if (c->kind == DPAD) {
+                draw("touch_dpad", cx, cy, 2.2f * r, 2.2f * r, IDLE * d_opacity);
+            } else if (i == GEAR) {
+                draw_piece("gear_192", cx, cy, 1.65f * r, 1.65f * r, 0.78f * d_opacity);
+            } else {
+                draw_button(c, false, cx, cy, r, IDLE * d_opacity);
+            }
+        } else {
+            if (c->kind == STICK)
+                draw_piece("pad", cx, cy, 2 * r, 2 * r, IDLE * d_opacity);
+            else if (c->kind == DPAD)
+                draw_piece("dpad", cx, cy, 2.2f * r, 2.2f * r, IDLE * d_opacity);
+            else if (i == GEAR)
+                draw_piece("gear_192", cx, cy, 1.65f * r, 1.65f * r, 0.78f * d_opacity);
+            else
+                draw_button(c, false, cx, cy, r, IDLE * d_opacity + (i >= BA && i <= BY ? 0.2f : 0.1f) * d_opacity);
+        }
     }
 }
-
 /* The picture is drawn in memory of our own and its changed boxes copied into the presenter's buffer: blended
  * in that buffer itself (the GPU's, mapped: slow to read on a phone) a dragged stick took a Pixel 4a from 60 fps
  * to 22 at the window's own size. */
@@ -837,7 +974,7 @@ static void draw_all(void)
     bool fresh = false;
     uint32_t *out = s_px;
     if (!s_bg || !s_cv || s_bg_w != s_w || s_bg_h != s_h || s_bg_aspect != d_aspect || s_bg_art != s_art ||
-        s_bg_layout != d_layout || s_bg_opacity != d_opacity) {
+        s_bg_layout != d_layout || s_bg_opacity != d_opacity || s_bg_skin != d_skin || s_bg_profile != d_profile || s_bg_ov_rev != d_ov_rev) {
         free(s_bg);
         free(s_cv);
         s_bg = malloc(sizeof(uint32_t) * px);
@@ -860,6 +997,9 @@ static void draw_all(void)
         s_bg_art = s_art;
         s_bg_layout = d_layout;
         s_bg_opacity = d_opacity;
+        s_bg_skin = d_skin;
+        s_bg_profile = d_profile;
+        s_bg_ov_rev = d_ov_rev;
         s_bg_gen++;
         fresh = true;
     } else if (s_cvrec.n >= 0) {
@@ -874,7 +1014,8 @@ static void draw_all(void)
     s_rec = &s_cvrec;
     for (int i = 0; i < NCTRL; i++) {
         const Ctrl *c = &s_ctrl[i];
-        Place at = place_at(c, d_aspect, s_art == ART_STANDIN, d_layout);
+        Place at = place_at(c, d_aspect, s_art == ART_STANDIN, d_layout, d_ov[d_profile][d_layout]);
+        if (!d_ov[d_profile][d_layout][i].visible) continue;
         float cx = at.x * u, cy = at.y * u, r = at.r * u;
         bool on = d_down[i];
         if (c->kind == STICK) {
@@ -882,28 +1023,51 @@ static void draw_all(void)
             float nx = cx + d_stick[s][0] * r * 0.55f, ny = cy + d_stick[s][1] * r * 0.55f;
             nx = roundf(nx - r / 2) + r / 2;   /* (moved by whole pixels: its picture at this size made once) */
             ny = roundf(ny - r / 2) + r / 2;
-            draw_piece("nub", nx, ny, r, r, on ? 0.95f : IDLE + 0.2f);
-            if (on) {
-                draw_piece("pad_lit", cx, cy, 2 * r, 2 * r, 0.9f);
-                draw_piece("nub_lit", nx, ny, r, r, 0.9f);
+            if (d_skin == 0) {
+                if (on) draw_piece("analog_active_ring", cx, cy, 2 * r, 2 * r, 0.90f);
+                draw_piece("analog_center", nx, ny, r, r, on ? 0.95f : IDLE * d_opacity);
+            } else if (d_skin == 1) {
+                draw("touch_pad", cx, cy, 2 * r, 2 * r, on ? 0.90f : IDLE * d_opacity);
+                draw(on ? "touch_nub_lit" : "touch_nub", nx, ny, r, r, on ? 0.95f : IDLE * d_opacity);
+            } else {
+                draw_piece("nub", nx, ny, r, r, on ? 0.95f : IDLE + 0.2f);
+                if (on) {
+                    draw_piece("pad_lit", cx, cy, 2 * r, 2 * r, 0.9f);
+                    draw_piece("nub_lit", nx, ny, r, r, 0.9f);
+                }
             }
         } else if (c->kind == DPAD && on) {
-            static const struct { int bit; const char *lit; float dx, dy; } arms[] = {
-                { XBOX_GAMEPAD_DPAD_UP, "dpad_north_lit", 0, -1 },
-                { XBOX_GAMEPAD_DPAD_DOWN, "dpad_south_lit", 0, 1 },
-                { XBOX_GAMEPAD_DPAD_LEFT, "dpad_west_lit", -1, 0 },
-                { XBOX_GAMEPAD_DPAD_RIGHT, "dpad_east_lit", 1, 0 },
+            static const struct { int bit; const char *lit; const char *pack; float dx, dy; } arms[] = {
+                { XBOX_GAMEPAD_DPAD_UP, "dpad_north_lit", "arrow_up", 0, -1 },
+                { XBOX_GAMEPAD_DPAD_DOWN, "dpad_south_lit", "arrow_down", 0, 1 },
+                { XBOX_GAMEPAD_DPAD_LEFT, "dpad_west_lit", "arrow_left", -1, 0 },
+                { XBOX_GAMEPAD_DPAD_RIGHT, "dpad_east_lit", "arrow_right", 1, 0 },
             };
             float size = 2.2f * r;   /* (the picture's arms are a third of it each) */
-            draw_piece("dpad", cx, cy, size, size, 0.45f);   /* (over the untouched one: less see-through) */
+            bool pack = d_skin == 0; bool classic = d_skin == 1;
+            if (pack) draw_piece("dpad_4way", cx, cy, size, size, 0.45f); else if (classic) draw("touch_dpad", cx, cy, size, size, 0.45f); else draw_piece("dpad", cx, cy, size, size, 0.45f);
             for (int a = 0; a < 4; a++)
-                if (d_dpad & arms[a].bit)
-                    draw_piece(arms[a].lit, cx + arms[a].dx * size / 3, cy + arms[a].dy * size / 3, size / 2,
-                               size / 2, 0.95f);
+                if (d_dpad & arms[a].bit) {
+                    const char *piece = pack ? arms[a].pack : arms[a].lit;
+                    const char *classic_piece = a == 0 ? "touch_dpad_north_lit" : a == 1 ? "touch_dpad_south_lit" :
+                                                a == 2 ? "touch_dpad_west_lit" : "touch_dpad_east_lit";
+                    if (classic)
+                        draw(classic_piece, cx + arms[a].dx * size / 3, cy + arms[a].dy * size / 3,
+                             size / 2, size / 2, 0.95f);
+                    else
+                        draw_piece(piece, cx + arms[a].dx * size / 3, cy + arms[a].dy * size / 3,
+                                   size / 2, size / 2, 0.95f);
+                }
         } else if (c->kind == BUTTON && on) {
-            draw_button(c, true, cx, cy, r, 1.0f);   /* (the game's pieces: their own held picture) */
+            const char *asset = d_skin == 0 ? pack_button_asset(i) : NULL;
+            if (asset)
+                draw_piece(asset, cx, cy, 2 * r, 2 * r, 1.0f);
+            else
+                draw_button(c, true, cx, cy, r, 1.0f);   /* (the game's pieces: their own held picture) */
         }
     }
+    editor_overlay_draw();
+    if (d_edit_mode) s_cvrec.n = -1;
     s_rec = NULL;
     s_px = out;
     /* Into the presenter's buffer: where it differs from the picture that buffer holds (drawn some frames ago) */
@@ -985,8 +1149,14 @@ bool nv2a_overlay_picture(uint32_t win_w, uint32_t win_h, uint32_t *px, size_t m
     }
     if (!w || !h || (size_t)w * h > max)
         return false;
+    int wanted_profile = ngb_touch_menu_auto ? !!ngb_touch_menu_auto() : 0;
     pthread_mutex_lock(&s_lock);
     s_aspect = (float)win_w / (float)win_h;
+    if (!s_edit_mode && s_profile != wanted_profile) {
+        s_profile = wanted_profile;
+        clear_touch_locked();
+        s_serial++;
+    }
     enum Art art = art_now();
     s_standin_places = art == ART_STANDIN;   /* (the touches found where the picture shows them) */
     if (art != s_art)
@@ -1008,7 +1178,13 @@ bool nv2a_overlay_picture(uint32_t win_w, uint32_t win_h, uint32_t *px, size_t m
         memcpy(d_stick, s_stick, sizeof d_stick);
         d_dpad = s_dpad;
         d_aspect = s_aspect;
-        d_layout = s_layout == 1;   /* (known: layout_known above) */
+        d_layout = s_edit_mode ? s_edit_layout : s_layout == 1;
+        d_profile = s_edit_mode ? s_edit_profile : s_profile; memcpy(d_ov, s_ov, sizeof d_ov); d_ov_rev = s_ov_rev;   /* (known: layout_known above) */
+        d_skin = s_skin;
+        d_edit_mode = s_edit_mode; d_edit_settings = s_edit_settings_open; d_edit_collapsed = s_editor_collapsed;
+        d_edit_grid = s_grid_enabled; d_edit_snap = s_snap_enabled; d_edit_profile = s_edit_profile;
+        d_edit_layout = s_edit_layout; d_edit_selected = s_edit_selected; d_edit_grid_size = s_grid_size;
+        d_edit_skin = s_skin; d_edit_reset_confirm = s_reset_confirm;
         d_opacity = (s_opacity < 0 ? 100 : s_opacity) / 100.0f;
     }
     pthread_mutex_unlock(&s_lock);
@@ -1024,3 +1200,140 @@ bool nv2a_overlay_picture(uint32_t win_w, uint32_t win_h, uint32_t *px, size_t m
     }
     return true;
 }
+
+
+
+
+
+/* Controls Pack editor overlay: panel, drawer, grid and selected-control handles. */
+static void ui_rect(int x0,int y0,int x1,int y1,uint32_t color)
+{
+    if (!s_px || x1<=x0 || y1<=y0) return;
+    x0=x0<0?0:x0; y0=y0<0?0:y0; x1=x1>s_w?s_w:x1; y1=y1>s_h?s_h:y1;
+    uint32_t A=color>>24, R=color>>16&255, G=color>>8&255, B=color&255;
+    for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++) {
+        uint32_t *p=&s_px[(size_t)y*s_w+x], q=*p, a=q>>24;
+        uint32_t inv=255-A;
+        uint32_t r=(R*A+(q>>16&255)*inv+127)/255, g=(G*A+(q>>8&255)*inv+127)/255, b=(B*A+(q&255)*inv+127)/255;
+        uint32_t oa=A+(a*inv+127)/255;
+        *p=(oa<<24)|(r<<16)|(g<<8)|b;
+    }
+}
+static void ui_outline(int x0,int y0,int x1,int y1,uint32_t color,int t)
+{
+    ui_rect(x0,y0,x1,y0+t,color); ui_rect(x0,y1-t,x1,y1,color);
+    ui_rect(x0,y0,x0+t,y1,color); ui_rect(x1-t,y0,x1,y1,color);
+}
+static int ui_text_width(const char *s,int scale)
+{
+    int w=0; for(;*s;s++){int g=(unsigned char)*s-32;if(g>=0&&g<95)w+=(launcher_font_w[g]+1)*scale;} return w>0?w-scale:0;
+}
+static void ui_text(const char *s,int x,int y,int scale,uint32_t color)
+{
+    int pen=x; uint32_t A=color>>24, R=color>>16&255,G=color>>8&255,B=color&255;
+    for(;*s;s++){
+        int g=(unsigned char)*s-32;if(g<0||g>=95)continue;
+        int gw=launcher_font_w[g];const uint8_t *src=launcher_font_px+launcher_font_off[g];
+        for(int sy=0;sy<LAUNCHER_FONT_H_PX;sy++)for(int sx=0;sx<gw;sx++){
+            uint8_t aa=src[sy*gw+sx]; if(!aa)continue;
+            for(int yy=0;yy<scale;yy++)for(int xx=0;xx<scale;xx++){
+                int px=pen+sx*scale+xx,py=y+sy*scale+yy;if(px<0||py<0||px>=s_w||py>=s_h)continue;
+                uint32_t *p=&s_px[(size_t)py*s_w+px],q=*p;uint32_t a=(uint32_t)aa*A/255,inv=255-a;
+                uint32_t r=(R*a+(q>>16&255)*inv+127)/255,gc=(G*a+(q>>8&255)*inv+127)/255,b=(B*a+(q&255)*inv+127)/255;
+                uint32_t oa=a+(q>>24)*inv/255;*p=(oa<<24)|(r<<16)|(gc<<8)|b;
+            }
+        }
+        pen+=(gw+1)*scale;
+    }
+}
+static void ui_center(const char *s,int cx,int y,int scale,uint32_t col)
+{ ui_text(s,cx-ui_text_width(s,scale)/2,y,scale,col); }
+static const char *editor_control_title(int id)
+{
+    static const char *const names[NCTRL] = {
+        "LEFT STICK", "RIGHT STICK", "D-PAD", "A - EVADE", "B - SHURIKEN", "X - SWORD", "Y - NINPO",
+        "LB", "RB", "LT", "RT", "BACK", "START", "L3", "R3", "LAYOUT", "OPACITY", "EDITOR"
+    };
+    return id >= 0 && id < NCTRL ? names[id] : "ALL CONTROLS";
+}
+static void editor_overlay_draw(void)
+{
+    if(!d_edit_mode)return;
+    const uint32_t white=0xFFF5F7FA, muted=0xFFB8C4D2, accent=0xFF45D7C0, panel=0xE91A202B, button=0xE92B3544;
+    float aspect=(float)s_w/(float)s_h, x0=0.025f, pw=fmaxf(0.30f,aspect-0.05f);
+    int px0=(int)(x0*s_h), panelw=(int)(pw*s_h), top=(int)(0.018f*s_h);
+    if(d_edit_collapsed) {
+        ui_rect(px0,top,px0+panelw,top+(int)(0.060f*s_h),panel);
+        ui_center("CONTROLS EDITOR",s_w/2,top+(int)(0.012f*s_h),1,white);
+        ui_rect(s_w/2-(int)(0.04f*s_h),top+(int)(0.046f*s_h),s_w/2+(int)(0.04f*s_h),top+(int)(0.055f*s_h),accent);
+    } else {
+        int ph=(int)(0.105f*s_h);
+        ui_rect(px0,top,px0+panelw,top+ph,panel);
+        static const float widths[13]={.18f,.06f,.04f,.10f,.04f,.07f,.04f,.16f,.04f,.07f,.07f,.07f,.06f};
+        const char *skin_names[3]={"VER40","CLASSIC","GAME STYLE"};
+
+        const char *layout=d_edit_layout?"CLASSIC":"DEFAULT";
+        char labels[13][24];
+        snprintf(labels[0],24,"%s",editor_control_title(d_edit_selected));
+        snprintf(labels[1],24,"%s",d_edit_profile?"MENU":"GAME");
+        snprintf(labels[2],24,"-"); snprintf(labels[4],24,"+");
+        snprintf(labels[6],24,"-"); snprintf(labels[8],24,"+");
+        snprintf(labels[9],24,"%s",d_edit_reset_confirm?"RESET?":"RESET");
+        snprintf(labels[10],24,"CANCEL"); snprintf(labels[11],24,"DONE"); snprintf(labels[12],24,"UP");
+        bool hidden = false;
+        if (d_edit_selected >= 0 && d_edit_selected < NCTRL) {
+            hidden = !d_ov[d_edit_profile][d_edit_layout][d_edit_selected].visible;
+        } else {
+            for (int i = 0; i < NCTRL; i++)
+                if (!d_ov[d_edit_profile][d_edit_layout][i].visible) { hidden = true; break; }
+        }
+        snprintf(labels[5],24,"%s",hidden?"SHOW":"HIDE");
+        if(d_edit_selected>=0 && d_edit_selected<NCTRL){
+            Place ep=place_at(&s_ctrl[d_edit_selected],d_aspect,s_art==ART_STANDIN,d_edit_layout,d_ov[d_edit_profile][d_edit_layout]);
+            float base=def_r(d_edit_layout,d_edit_selected),factor=base>0?ep.r/base:1.0f;
+            snprintf(labels[3],24,"S %.0f%%",factor*100.0f);
+            snprintf(labels[7],24,"OPAC %.0f%%",d_ov[d_edit_profile][d_edit_layout][d_edit_selected].opacity*100.0f);
+        } else { snprintf(labels[3],24,"S ALL"); snprintf(labels[7],24,"OPAC ALL"); }
+        float edge=0; int scale=1;
+        for(int i=0;i<13;i++){
+            int bx=px0+(int)(edge*panelw), ex=px0+(int)((edge+widths[i])*panelw);
+            ui_rect(bx+1,top+2,ex-1,top+ph-2,(i==11?accent:(i==10?0xE9554146:button)));
+            ui_outline(bx+1,top+2,ex-1,top+ph-2,0x665F778A,1);
+            uint32_t tc=i==11?0xFF081A20:white;
+            ui_center(labels[i],(bx+ex)/2,top+ph/2-(LAUNCHER_FONT_H_PX*scale)/2,scale,tc);
+            edge+=widths[i];
+        }
+        if(d_edit_settings){
+            int st=(int)(0.13f*s_h),eh=(int)(0.10f*s_h);
+            ui_rect(px0,st,px0+panelw,st+eh,panel);
+            const char *settings[5]={"GRID","SNAP","STEP","SKIN","LAYOUT"};
+            char vals[5][24];snprintf(vals[0],24,d_edit_grid?"ON":"OFF");snprintf(vals[1],24,d_edit_snap?"ON":"OFF");
+            snprintf(vals[2],24,d_edit_grid_size==0?"S":d_edit_grid_size==1?"M":"L");
+            snprintf(vals[3],24,"%s",skin_names[d_edit_skin<0?0:d_edit_skin>2?2:d_edit_skin]);
+            snprintf(vals[4],24,"%s",layout);
+            for(int i=0;i<5;i++){int bx=px0+i*panelw/5,ex=px0+(i+1)*panelw/5;
+                ui_rect(bx+2,st+2,ex-2,st+eh-2,button);ui_center(settings[i],(bx+ex)/2,st+4,1,muted);
+                ui_center(vals[i],(bx+ex)/2,st+36,1,white);}
+        }
+    }
+    if(d_edit_grid){
+        static const float step[3]={.045f,.067f,.089f};float g=step[d_edit_grid_size<0?1:d_edit_grid_size>2?2:d_edit_grid_size];
+        for(float x=g;x<aspect;x+=g){int xx=(int)(x*s_h);ui_rect(xx,0,xx+1,s_h,0x263BD5C8);}
+        for(float y=g;y<1.0f;y+=g){int yy=(int)(y*s_h);ui_rect(0,yy,s_w,yy+1,0x263BD5C8);}
+        ui_rect(s_w/2-1,0,s_w/2+1,s_h,0x4486E3D4);ui_rect(0,s_h/2-1,s_w,s_h/2+1,0x4486E3D4);
+    }
+    if(d_edit_selected>=0&&d_edit_selected<NCTRL){
+        Place p=place_at(&s_ctrl[d_edit_selected],d_aspect,s_art==ART_STANDIN,d_edit_layout,d_ov[d_edit_profile][d_edit_layout]);
+        float hw,hh;bool circle;float cx=p.x*s_h,cy=p.y*s_h;
+        bounds_of(d_edit_selected,p,&cx,&cy,&hw,&hh,&circle);
+        int x=(int)((cx-hw)*s_h),y=(int)((cy-hh)*s_h),ex=(int)((cx+hw)*s_h),ey=(int)((cy+hh)*s_h);
+        ui_outline(x,y,ex,ey,accent,3);
+        int hx=ex,hy=ey;if(hx+(int)(.055f*s_h)>s_w)hx=x;
+        ui_rect(hx-(int)(.018f*s_h),hy-(int)(.018f*s_h),hx+(int)(.018f*s_h),hy+(int)(.018f*s_h),accent);
+        char sel[64];snprintf(sel,sizeof sel,"SELECTED: %s",s_ctrl[d_edit_selected].name?s_ctrl[d_edit_selected].name:"CONTROL");
+        ui_rect(px0,top+(int)(.112f*s_h),px0+panelw,top+(int)(.145f*s_h),0xC91A202B);
+        ui_center(sel,s_w/2,top+(int)(.116f*s_h),1,white);
+    }
+    /* In-editor artwork remains visible beneath the translucent HUD. */
+}
+

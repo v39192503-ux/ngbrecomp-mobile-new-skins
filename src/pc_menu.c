@@ -629,6 +629,12 @@ void ngb_movie_playing(int playing)
 }
 int ngb_movie_active(void) { return s_movie_ms && now_ms() - s_movie_ms < 200; }
 void ngb_boot_over(void) { s_boot = 0; }   /* the title is up */
+int ngb_menu_up_controls(void);   /* src/menu_mouse.c */
+/* The touch overlay uses the MENU profile for boot, menus, loading cards and movies. */
+int ngb_touch_menu_auto(void)
+{
+    return s_boot || s_menu_now || s_menu_last || s_screen_2d || ngb_movie_active() || ngb_menu_up_controls();
+}
 
 /* NGB_MENUS_43=1: on a wide screen the game's 4:3 mode, play and the 2D screens, the console's 4:3 picture
  * in the middle of the screen (debugging; the widescreen mode otherwise). */

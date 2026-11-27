@@ -1,0 +1,236 @@
+diff --git a/README.md b/README.md
+index 8b5577f..ec33b8b 100644
+--- a/README.md
++++ b/README.md
+@@ -233,7 +233,7 @@ were.
+ 
+ ## Controls
+ 
+-On Android, the VER40 Controls Pack draws a customizable Xbox-style touch pad. The editor opens from the gear: tap a control to select it, drag to move, resize with the corner handle or pinch, and adjust size/opacity, visibility, reset, save or cancel. Hold the panel tab to open settings for grid, snap, grid spacing, skins and layout. Three fallback skin styles are available (VER40, Classic and Game-style). The GAME and MENU profiles are switched manually in the editor for now. Touch controls hide while a controller is connected.
++On Android, the VER40 Controls Pack draws a customizable Xbox-style touch pad. The editor opens from the gear: tap a control to select it, drag to move, resize with the corner handle or pinch, and adjust size/opacity, visibility, reset, save or cancel. Its labeled top bar shows the selected control and the current size/opacity values; hold **UP** to open settings for grid, snap, grid spacing, skin and layout. The three selectable skins (VER40, Classic and Game-style) apply during gameplay as well as in the editor. GAME and MENU layouts switch with the game's menu/movie state; either profile can be selected directly while editing. Touch controls hide while a controller is connected.
+ 
+ A controller works as on the Xbox. The keyboard and mouse can be used at any time — the game follows
+ whichever was touched last, and its button prompts change to match (or stay on one set: "Button
+diff --git a/docs/VER40-CONTROLS-PACK.md b/docs/VER40-CONTROLS-PACK.md
+index 2cd1d93..585d9e9 100644
+--- a/docs/VER40-CONTROLS-PACK.md
++++ b/docs/VER40-CONTROLS-PACK.md
+@@ -1,10 +1,10 @@
+ # VER40 Controls Pack — Android touch controls
+ 
+-This branch replaces the previous assets-only staging update with the current integrated source tree and the 1.0.3 Controls Pack Android build.
++This branch contains the integrated Controls Pack source plus the unbuilt v0.9.66 behavior/visual corrections described below. The published v1.0.3 APK is a separate, unchanged baseline and does not contain these branch edits.
+ 
+ ## Features implemented in the source
+ - Custom VER40 artwork for touch buttons, analog sticks, D-pad, shoulders, triggers and system controls.
+-- Preserved original Kenney-style/classic fallback sprites alongside the VER40 and generated/game-art fallback skin modes.
++- Three selectable skins: VER40 custom artwork, Classic/Kenney, and Game-style artwork. The selected skin is rendered during gameplay and is not limited to the game-art fallback path.
+ - On-screen Controls editor HUD: profile toggle, size and opacity adjustments, hide/show, reset (confirmation when resetting all), Save and Cancel.
+ - Select a touch control by tapping it; drag it to reposition and use its resize handle/pinch to resize.
+ - Settings drawer: grid toggle, snapping, grid spacing, skin cycling and layout choice.
+@@ -19,7 +19,7 @@ This branch replaces the previous assets-only staging update with the current in
+ - Drawer controls grid, snap, grid size, skin and layout.
+ 
+ ## Limitations / test status
+-- The MENU and GAME profiles can be selected manually in the editor. Automatic switching based on the game's menu state is not yet connected.
+-- The editor overlay was compiled into the Android candidate APK. No device runtime test has been performed in this publishing session because an Android device is not connected through ADB.
++- The MENU and GAME profiles switch automatically with the game's boot, menu, loading-card, movie and 2D-menu signals; either profile can also be chosen directly in the editor.
++- The changes described here have not been compiled into a new APK: this environment has no CMake, Android SDK/NDK, SDL2 development package or connected ADB device. The original v1.0.3 APK remains separate and unchanged; runtime touch/visual tests are pending.
+ - Generated recompilation sources and game files are intentionally excluded. Build from your own legally obtained retail XISO/XBE by following the project's generation pipeline.
+ - This repository does not include game ROM/XISO/XBE, game textures, or extracted/generated game code.
+diff --git a/src/pc_menu.c b/src/pc_menu.c
+index d5109f4..de06a72 100644
+--- a/src/pc_menu.c
++++ b/src/pc_menu.c
+@@ -629,6 +629,12 @@ void ngb_movie_playing(int playing)
+ }
+ int ngb_movie_active(void) { return s_movie_ms && now_ms() - s_movie_ms < 200; }
+ void ngb_boot_over(void) { s_boot = 0; }   /* the title is up */
++int ngb_menu_up_controls(void);   /* src/menu_mouse.c */
++/* The touch overlay uses the MENU profile for boot, menus, loading cards and movies. */
++int ngb_touch_menu_auto(void)
++{
++    return s_boot || s_menu_now || s_menu_last || s_screen_2d || ngb_movie_active() || ngb_menu_up_controls();
++}
+ 
+ /* NGB_MENUS_43=1: on a wide screen the game's 4:3 mode, play and the 2D screens, the console's 4:3 picture
+  * in the middle of the screen (debugging; the widescreen mode otherwise). */
+diff --git a/src/touch_pad.c b/src/touch_pad.c
+index b06cd37..2ed577e 100644
+--- a/src/touch_pad.c
++++ b/src/touch_pad.c
+@@ -6,15 +6,12 @@
+  *
+  * The picture is made here, at the window's own size (half its size, enlarged by the presenter, blurred every
+  * piece: #284; NGB_TOUCH_HALF=1 makes it at half again, to compare), premultiplied BGRA, again whenever something
+- * on it changes; the presenter blends it over each frame (xboxrecomp's present_sdl.c, nv2a_overlay_picture). The pieces
+- * are made from the game's own button art (src/game_prompts.c: the game's gems, plates and Black and White
+- * buttons at touch size, a d-pad drawn in the look of its icon, the sticks' wells; each held piece a picture of
+- * its own), and saved in the save folder (<save folder>/touch-art), so a later start shows them from its first
+- * frame. On a first start nothing is drawn until they are made (a second or so after the game's textures load).
+- * Should they not come -- the game's textures not read after STANDIN_AFTER_MS of frames, or the arcade, which has no game_prompts.c --
+- * stand-ins so a phone without a controller still has its controls: Kenney's Mobile Controls (CC0: assets/touch,
+- * embedded by CMakeLists.txt) for the sticks and d-pad, the buttons dark discs with their letters in Noto Sans
+- * (OFL: launcher_font.h), held: a gold ring round them. Half see-through untouched.
++ * on it changes; the presenter blends it over each frame (xboxrecomp's present_sdl.c, nv2a_overlay_picture). The
++ * selected skin controls the actual artwork regardless of whether the game's pieces have loaded: VER40 uses its
++ * embedded touch PNGs; Classic uses the embedded Kenney touch PNGs plus generated labeled button discs; Game-style
++ * uses the game's art when available and generated stand-ins otherwise. This keeps selected skins visible during
++ * gameplay instead of silently reverting to game-art after textures load. Untouched controls are translucent;
++ * pressed controls use their lit artwork.
+  *
+  * Places are in screen heights from the left or right edge or the middle (a tall screen keeps its controls in
+  * the corners; a less wide one draws the d-pad and right stick in towards the middle). The face buttons sit in
+@@ -866,7 +863,7 @@ static void draw_piece(const char *name, float cx, float cy, float bw, float bh,
+ /* A button's picture, idle or held */
+ static void draw_button(const Ctrl *c, bool lit, float cx, float cy, float r, float a)
+ {
+-    if (s_art == ART_GAME) {
++    if (d_skin == 2 && s_art == ART_GAME && c->piece) {
+         char n[40];
+         snprintf(n, sizeof n, lit ? "%s_lit" : "%s", c->piece);
+         draw_piece(n, cx, cy, 2.5f * r, 2.5f * r, a);
+@@ -920,7 +917,7 @@ static void draw_idle(void)
+         Place at = place_at(c, d_aspect, s_art == ART_STANDIN, d_layout, d_ov[d_profile][d_layout]);
+         if (!d_ov[d_profile][d_layout][i].visible) continue;
+         float cx = at.x * u, cy = at.y * u, r = at.r * u;
+-        if (s_art == ART_STANDIN && d_skin == 0) {
++        if (d_skin == 0) {
+             if (c->kind == STICK) {
+                 draw_piece("analog_base", cx, cy, 2 * r, 2 * r, IDLE * d_opacity);
+                 draw_piece("analog_center", cx, cy, r, r, IDLE * d_opacity);
+@@ -933,7 +930,7 @@ static void draw_idle(void)
+                 if (asset) draw_piece(asset, cx, cy, 2 * r, 2 * r, IDLE * d_opacity);
+                 else draw_button(c, false, cx, cy, r, IDLE * d_opacity);
+             }
+-        } else if (s_art == ART_STANDIN && d_skin == 1) {
++        } else if (d_skin == 1) {
+             if (c->kind == STICK) {
+                 draw("touch_pad", cx, cy, 2 * r, 2 * r, IDLE * d_opacity);
+                 draw("touch_nub", cx, cy, r, r, IDLE * d_opacity);
+@@ -1026,10 +1023,10 @@ static void draw_all(void)
+             float nx = cx + d_stick[s][0] * r * 0.55f, ny = cy + d_stick[s][1] * r * 0.55f;
+             nx = roundf(nx - r / 2) + r / 2;   /* (moved by whole pixels: its picture at this size made once) */
+             ny = roundf(ny - r / 2) + r / 2;
+-            if (s_art == ART_STANDIN && d_skin == 0) {
++            if (d_skin == 0) {
+                 if (on) draw_piece("analog_active_ring", cx, cy, 2 * r, 2 * r, 0.90f);
+                 draw_piece("analog_center", nx, ny, r, r, on ? 0.95f : IDLE * d_opacity);
+-            } else if (s_art == ART_STANDIN && d_skin == 1) {
++            } else if (d_skin == 1) {
+                 draw("touch_pad", cx, cy, 2 * r, 2 * r, on ? 0.90f : IDLE * d_opacity);
+                 draw(on ? "touch_nub_lit" : "touch_nub", nx, ny, r, r, on ? 0.95f : IDLE * d_opacity);
+             } else {
+@@ -1047,14 +1044,22 @@ static void draw_all(void)
+                 { XBOX_GAMEPAD_DPAD_RIGHT, "dpad_east_lit", "arrow_right", 1, 0 },
+             };
+             float size = 2.2f * r;   /* (the picture's arms are a third of it each) */
+-            bool pack = s_art == ART_STANDIN && d_skin == 0; bool classic = s_art == ART_STANDIN && d_skin == 1;
++            bool pack = d_skin == 0; bool classic = d_skin == 1;
+             if (pack) draw_piece("dpad_4way", cx, cy, size, size, 0.45f); else if (classic) draw("touch_dpad", cx, cy, size, size, 0.45f); else draw_piece("dpad", cx, cy, size, size, 0.45f);
+             for (int a = 0; a < 4; a++)
+-                if (d_dpad & arms[a].bit)
+-                    draw_piece(pack ? arms[a].pack : classic ? arms[a].lit : arms[a].lit, cx + arms[a].dx * size / 3, cy + arms[a].dy * size / 3, size / 2,
+-                               size / 2, 0.95f);
++                if (d_dpad & arms[a].bit) {
++                    const char *piece = pack ? arms[a].pack : arms[a].lit;
++                    const char *classic_piece = a == 0 ? "touch_dpad_north_lit" : a == 1 ? "touch_dpad_south_lit" :
++                                                a == 2 ? "touch_dpad_west_lit" : "touch_dpad_east_lit";
++                    if (classic)
++                        draw(classic_piece, cx + arms[a].dx * size / 3, cy + arms[a].dy * size / 3,
++                             size / 2, size / 2, 0.95f);
++                    else
++                        draw_piece(piece, cx + arms[a].dx * size / 3, cy + arms[a].dy * size / 3,
++                                   size / 2, size / 2, 0.95f);
++                }
+         } else if (c->kind == BUTTON && on) {
+-            const char *asset = s_art == ART_STANDIN && d_skin == 0 ? pack_button_asset(i) : NULL;
++            const char *asset = d_skin == 0 ? pack_button_asset(i) : NULL;
+             if (asset)
+                 draw_piece(asset, cx, cy, 2 * r, 2 * r, 1.0f);
+             else
+@@ -1144,8 +1149,14 @@ bool nv2a_overlay_picture(uint32_t win_w, uint32_t win_h, uint32_t *px, size_t m
+     }
+     if (!w || !h || (size_t)w * h > max)
+         return false;
++    int wanted_profile = ngb_touch_menu_auto ? !!ngb_touch_menu_auto() : 0;
+     pthread_mutex_lock(&s_lock);
+     s_aspect = (float)win_w / (float)win_h;
++    if (!s_edit_mode && s_profile != wanted_profile) {
++        s_profile = wanted_profile;
++        clear_touch_locked();
++        s_serial++;
++    }
+     enum Art art = art_now();
+     s_standin_places = art == ART_STANDIN;   /* (the touches found where the picture shows them) */
+     if (art != s_art)
+@@ -1237,6 +1248,14 @@ static void ui_text(const char *s,int x,int y,int scale,uint32_t color)
+ }
+ static void ui_center(const char *s,int cx,int y,int scale,uint32_t col)
+ { ui_text(s,cx-ui_text_width(s,scale)/2,y,scale,col); }
++static const char *editor_control_title(int id)
++{
++    static const char *const names[NCTRL] = {
++        "LEFT STICK", "RIGHT STICK", "D-PAD", "A - EVADE", "B - SHURIKEN", "X - SWORD", "Y - NINPO",
++        "LB", "RB", "LT", "RT", "BACK", "START", "L3", "R3", "LAYOUT", "OPACITY", "EDITOR"
++    };
++    return id >= 0 && id < NCTRL ? names[id] : "ALL CONTROLS";
++}
+ static void editor_overlay_draw(void)
+ {
+     if(!d_edit_mode)return;
+@@ -1251,23 +1270,33 @@ static void editor_overlay_draw(void)
+         int ph=(int)(0.105f*s_h);
+         ui_rect(px0,top,px0+panelw,top+ph,panel);
+         static const float widths[13]={.18f,.06f,.04f,.10f,.04f,.07f,.04f,.16f,.04f,.07f,.07f,.07f,.06f};
+-        const char *skin_names[3]={"VER40","CLSC","GAME"};
++        const char *skin_names[3]={"VER40","CLASSIC","GAME STYLE"};
+ 
+         const char *layout=d_edit_layout?"CLASSIC":"DEFAULT";
+         char labels[13][24];
+-        snprintf(labels[0],24,"ALL"); snprintf(labels[1],24,d_edit_profile?"M":"G");
+-        snprintf(labels[2],24,"-"); snprintf(labels[4],24,"+"); snprintf(labels[5],24,"H");
+-        snprintf(labels[6],24,"-"); snprintf(labels[8],24,"+"); snprintf(labels[9],24,d_edit_reset_confirm?"R?":"R");
+-        snprintf(labels[10],24,"X"); snprintf(labels[11],24,"OK"); snprintf(labels[12],24,"S");
++        snprintf(labels[0],24,"%s",editor_control_title(d_edit_selected));
++        snprintf(labels[1],24,"%s",d_edit_profile?"MENU":"GAME");
++        snprintf(labels[2],24,"-"); snprintf(labels[4],24,"+");
++        snprintf(labels[6],24,"-"); snprintf(labels[8],24,"+");
++        snprintf(labels[9],24,"%s",d_edit_reset_confirm?"RESET?":"RESET");
++        snprintf(labels[10],24,"CANCEL"); snprintf(labels[11],24,"DONE"); snprintf(labels[12],24,"UP");
++        bool hidden = false;
++        if (d_edit_selected >= 0 && d_edit_selected < NCTRL) {
++            hidden = !d_ov[d_edit_profile][d_edit_layout][d_edit_selected].visible;
++        } else {
++            for (int i = 0; i < NCTRL; i++)
++                if (!d_ov[d_edit_profile][d_edit_layout][i].visible) { hidden = true; break; }
++        }
++        snprintf(labels[5],24,"%s",hidden?"SHOW":"HIDE");
+         if(d_edit_selected>=0 && d_edit_selected<NCTRL){
+             Place ep=place_at(&s_ctrl[d_edit_selected],d_aspect,s_art==ART_STANDIN,d_edit_layout,d_ov[d_edit_profile][d_edit_layout]);
+             float base=def_r(d_edit_layout,d_edit_selected),factor=base>0?ep.r/base:1.0f;
+-            snprintf(labels[3],24,"%.1fx",factor);
+-            snprintf(labels[7],24,"%.0f%%",d_ov[d_edit_profile][d_edit_layout][d_edit_selected].opacity*100.0f);
+-        } else { snprintf(labels[3],24,"ALL"); snprintf(labels[7],24,"ALL"); }
+-        float edge=x0; int scale=1;
++            snprintf(labels[3],24,"S %.0f%%",factor*100.0f);
++            snprintf(labels[7],24,"OPAC %.0f%%",d_ov[d_edit_profile][d_edit_layout][d_edit_selected].opacity*100.0f);
++        } else { snprintf(labels[3],24,"S ALL"); snprintf(labels[7],24,"OPAC ALL"); }
++        float edge=0; int scale=1;
+         for(int i=0;i<13;i++){
+-            int bx=(int)(edge*s_h), ex=(int)((edge+widths[i])*s_h);
++            int bx=px0+(int)(edge*panelw), ex=px0+(int)((edge+widths[i])*panelw);
+             ui_rect(bx+1,top+2,ex-1,top+ph-2,(i==11?accent:(i==10?0xE9554146:button)));
+             ui_outline(bx+1,top+2,ex-1,top+ph-2,0x665F778A,1);
+             uint32_t tc=i==11?0xFF081A20:white;
+@@ -1308,10 +1337,3 @@ static void editor_overlay_draw(void)
+     /* In-editor artwork remains visible beneath the translucent HUD. */
+ }
+ 
+-
+-
+-
+-
+-
+-
+-

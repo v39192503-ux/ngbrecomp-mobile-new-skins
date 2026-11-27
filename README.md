@@ -40,7 +40,7 @@ release** (NTSC-U, title ID `5443000D`) and checks for it.
 ## Features
 
 - Native Linux (AppImage) and Windows (x64) builds; Steam Deck friendly
-- Android (arm64), with touch controls
+- Android (arm64), with the VER40 Controls Pack: custom touch skins and an on-screen layout editor
 - Render resolution up to 10x, anisotropic filtering, MSAA, sharper shadows
 - 16:9, 16:10, 21:9 and 32:9 as well as 4:3: the 3D fills the screen, the HUD goes to the screen's
   corners, optional HUD-free view, menus keep the game's own 16:9
@@ -233,8 +233,7 @@ were.
 
 ## Controls
 
-On Android, an original Xbox pad is drawn over the screen: the two sticks, the d-pad, A B X Y, Black and
-White, the triggers, Back, Start and the stick clicks, made from the game's own button art. It hides while a controller is connected.
+On Android, the VER40 Controls Pack draws a customizable Xbox-style touch pad. The editor opens from the gear: tap a control to select it, drag to move, resize with the corner handle or pinch, and adjust size/opacity, visibility, reset, save or cancel. Its labeled top bar shows the selected control and the current size/opacity values; hold **UP** to open settings for grid, snap, grid spacing, skin and layout. The three selectable skins (VER40, Classic and Game-style) apply during gameplay as well as in the editor. GAME and MENU layouts switch with the game's menu/movie state; either profile can be selected directly while editing. Touch controls hide while a controller is connected.
 
 A controller works as on the Xbox. The keyboard and mouse can be used at any time — the game follows
 whichever was touched last, and its button prompts change to match (or stay on one set: "Button
